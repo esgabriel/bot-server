@@ -1,0 +1,52 @@
+# Dockerfile para la API de FastAPI
+FROM python:3.11-slim
+
+# Metadatos
+LABEL maintainer="Quaxar México"
+LABEL description="Backend API FastAPI para Chatbot RAG Multi-Sitio"
+
+# Evitar que Python genere archivos .pyc y habilitar logs en tiempo real
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Crear usuario no-root para mayor seguridad
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+WORKDIR /app
+
+# Instalar dependencias del sistema necesarias
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && rm -rf /var/lib/apt/lists/*
+
+# Copiar SOLO requirements primero (para aprovechar caché de Docker)
+COPY requirements.txt requirements-api.txt* ./
+
+# Instalar dependencias de Python
+# Priorizar requirements-api.txt si existe, sino usar requirements.txt
+RUN if [ -f requirements-api.txt ]; then \
+        pip install --no-cache-dir -r requirements-api.txt; \
+    else \
+        pip install --no-cache-dir -r requirements.txt; \
+    fi
+
+# Copiar el código de la aplicación
+COPY app/ ./app/
+COPY ingest.py ./
+
+# Crear directorios necesarios
+RUN mkdir -p /app/data /app/docs /app/logs
+
+# Cambiar permisos al usuario no-root
+RUN chown -R appuser:appuser /app
+
+# Cambiar a usuario no-root
+USER appuser
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Exponer el puerto 8000
+EXPOSE 8000
+
+# Comando para ejecutar la aplicación
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

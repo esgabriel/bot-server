@@ -1,0 +1,26 @@
+#   API Backend  
+fastapi==0.129.0
+uvicorn[standard]==0.41.0
+python-multipart==0.0.22
+pydantic==2.12.5
+pydantic-settings==2.13.1
+
+# Dashboard 
+streamlit==1.54.0
+streamlit-cookies-controller==0.0.4
+
+# IA & RAG Logic  
+langchain==1.2.10
+langchain-community==0.4.1
+langchain-openai==1.1.10
+langchain-text-splitters==1.1.1
+chromadb==1.5.1
+langchain-chroma==1.1.0
+openai==2.21.0
+tiktoken==0.12.0
+
+# Procesamiento de Archivos  
+pypdf==6.7.1
+
+# Utilidades
+python-dotenv==1.2.1

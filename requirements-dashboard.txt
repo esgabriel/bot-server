@@ -1,0 +1,29 @@
+# Dependencias para el Panel de Administración Streamlit
+# Instalar con: pip install -r requirements-dashboard.txt
+
+# Framework principal
+streamlit==1.54.0
+
+# Seguridad (para contraseñas hasheadas)
+bcrypt==5.0.0
+
+# Procesamiento de PDFs
+pypdf==6.7.1
+
+# LangChain
+langchain==1.2.10
+langchain-community==0.4.1
+langchain-openai==1.1.10
+
+# Vector Database
+chromadb==1.5.1
+langchain-chroma==1.1.0
+
+# OpenAI
+openai==2.21.0
+
+# Variables de entorno
+python-dotenv==1.2.1
+
+# Utilidades
+requests==2.32.5

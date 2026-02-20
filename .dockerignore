@@ -1,0 +1,75 @@
+# Archivos de Git
+.git/
+.gitignore
+.gitattributes
+
+# Datos y documentos (se montan como volúmenes)
+data/
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Entornos virtuales
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Variables de entorno (se pasan por docker-compose)
+.env
+.env.*
+
+# Node (si existe)
+node_modules/
+npm-debug.log
+
+# Backups
+*.backup
+*.bak
+*.old
+
+# Documentación
+README.md
+*.md
+docs/*.md
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Archivos temporales
+tmp/
+temp/
+*.tmp
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Archivos de sistema
+Thumbs.db
+.directory

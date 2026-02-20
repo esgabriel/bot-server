@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # API Backend de FastAPI
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: quaxar-chatbot-server-api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind mounts para persistencia de datos
+      - ./data:/app/data
+      - ./docs:/app/docs
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Dashboard de Administración de Streamlit
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: quaxar-chatbot-server-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      # Compartir los mismos volúmenes que la API
+      - ./data:/app/data
+      - ./docs:/app/docs
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  chatbot-network:
+    driver: bridge
