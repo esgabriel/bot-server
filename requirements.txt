@@ -24,3 +24,4 @@ pypdf==6.7.1
 
 # Utilidades
 python-dotenv==1.2.1
+slowapi==0.1.9

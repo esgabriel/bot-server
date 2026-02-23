@@ -30,3 +30,4 @@ python-dotenv==1.2.1
 
 # Utilidades
 requests==2.32.5
+slowapi==0.1.9

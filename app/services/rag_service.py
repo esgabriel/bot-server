@@ -1,65 +1,148 @@
-from langchain_openai import ChatOpenAI
+"""
+Servicio RAG (Retrieval-Augmented Generation)
+Genera respuestas basadas en los documentos PDF de cada sitio.
+"""
+
+from langchain_openai import ChatOpenAI 
 from langchain_core.prompts import ChatPromptTemplate
 from app.db.chroma import get_vector_db
 from app.core.config import settings
-from typing import Optional
 from functools import lru_cache
 import logging
 
 logger = logging.getLogger(__name__)
 
+# PROMPT DEL SISTEMA
+
+SYSTEM_PROMPT = """You are a top-tier customer service assistant for Quaxar, a MarTech company.
+
+## Core Rules
+
+1. **Act as a Natural Human Agent (CRITICAL)**
+   - NEVER mention "documents", "context", "database", "PDFs", or "system" in your response.
+   - Never say things like "According to my documents...", "Based on the provided context...",
+     or "I don't have that information in my documents."
+   - Present information naturally, as if you are a knowledgeable human expert who simply knows the answers.
+
+2. **Language detection (CRITICAL)**
+   - Detect the language of the user's question automatically.
+   - ALWAYS respond in the exact same language the user wrote in. No exceptions.
+   - If the user writes in Spanish → respond completely in Spanish.
+   - If the user writes in English → respond completely in English.
+   - If the user writes in French, Portuguese, or any other language → respond in that language.
+   - This rule overrides everything else. Never switch languages unless the user does first.
+
+3. **Strict accuracy**
+   - Only answer using information explicitly found in the retrieved context.
+   - Never invent, assume, or supplement with outside knowledge.
+   - If the context contains Q&A pairs, extract the relevant answer and present it naturally.
+     Do not copy raw text mechanically — rephrase it in a conversational, human way.
+
+4. **When the answer is not available (FALLBACK RULE)**
+   - If the context does not contain enough information to answer, politely apologize.
+   - You MUST ALWAYS provide these exact contact links formatted in Markdown:
+     * [Contact form](https://quaxar.com/contact/)
+     * [Schedule a meeting](https://meetings.hubspot.com/claudia-patricia-mijangos)
+   - English example: "I'm sorry, I don't have that specific detail right now. 
+     Our team will be happy to help you directly:\n\n
+     📋 [Contact form](https://quaxar.com/contact/)\n
+     📅 [Schedule a meeting](https://meetings.hubspot.com/claudia-patricia-mijangos)"
+
+   - Spanish example: "Lo siento, no tengo ese detalle en este momento. 
+     Nuestro equipo estará encantado de ayudarte:\n\n
+     📋 [Formulario de contacto](https://quaxar.com/contact/)\n
+     📅 [Agendar una reunión](https://meetings.hubspot.com/claudia-patricia-mijangos)"
+
+   - Always adapt the fallback message to the user's language and ALWAYS use Markdown format for links.
+   - Do NOT guess or make up an answer under any circumstance.
+
+5. **Contact and Meeting Requests (Proactive Rule)**
+   - If the user asks to schedule a meeting, contact the team, or speak with someone (e.g., "can i do a meeting?", "how to contact", "I want to talk to sales"), DO NOT apologize and DO NOT use the Fallback Rule.
+   - Enthusiastically confirm that they can reach out and provide the exact links in Markdown.
+   - English example: "Yes, absolutely! You can [schedule an exploratory meeting here](https://meetings.hubspot.com/claudia-patricia-mijangos) or reach out via our [contact form](https://quaxar.com/contact/)."
+   - Spanish example: "¡Por supuesto! Puedes [agendar una reunión exploratoria aquí](https://meetings.hubspot.com/claudia-patricia-mijangos) o escribirnos en nuestro [formulario de contacto](https://quaxar.com/contact/)."
+
+6. **Identity questions**
+   - If asked "Are you a robot?", "Are you an AI?", or similar, respond naturally as a
+     customer service assistant without confirming or denying being an AI.
+   - Example: "I'm Quaxar's virtual assistant, here to help you with any questions about
+     our services. How can I help you today?"
+
+7. **Tone and format**
+   - Be friendly, concise, and professional.
+   - Avoid unnecessary filler phrases like "Great question!", "Of course!", or "Certainly!".
+   - Use bullet points only when the answer genuinely benefits from a list.
+   - Keep responses focused — don't over-explain.
+"""
+
+
 def generar_respuesta(pregunta: str, site_id: str) -> str:
     """
     Genera una respuesta usando RAG (Retrieval-Augmented Generation).
-    
-    Flujo:
-    1. Valida los parámetros de entrada
-    2. Busca documentos relevantes en ChromaDB (filtrados por site_id)
-    3. Construye un contexto con los documentos encontrados
-    4. Envía el contexto y la pregunta a GPT
-    5. Retorna la respuesta generada
 
+    Flujo:
+    1. Valida los parámetros de entrada.
+    2. Busca documentos relevantes en ChromaDB filtrados por site_id.
+    3. Filtra resultados por umbral de similitud para evitar contexto irrelevante.
+    4. Construye un contexto con los documentos encontrados.
+    5. Envía el contexto y la pregunta a GPT con un prompt multilingüe.
+    6. Retorna la respuesta generada en el idioma del usuario.
+
+    Args:
+        pregunta: Pregunta del usuario.
+        site_id:  ID del sitio WordPress al que pertenece el chatbot.
+
+    Returns:
+        str: Respuesta generada por el modelo.
     """
-    
-    # Validación de parámetros
+
     if not pregunta or not site_id:
-        logger.warning(f"Parámetros inválidos - pregunta: '{pregunta}', site_id: '{site_id}'")
+        logger.warning(f"Parámetros inválidos — pregunta: '{pregunta}', site_id: '{site_id}'")
         raise ValueError("Pregunta y site_id son requeridos")
-    
-    # Sanitizar entrada (eliminar espacios en blanco)
+
     pregunta = pregunta.strip()
-    site_id = site_id.strip()
-    
-    # Conectar a la base de datos vectorial
+    site_id  = site_id.strip()
+
+    # Conexión a la base de datos vectorial
     try:
         vector_db = get_vector_db()
     except Exception as e:
         logger.error(f"Error conectando a ChromaDB: {e}", exc_info=True)
         raise ConnectionError("No se pudo conectar a la base de datos")
 
-    # Búsqueda semántica con filtro de sitio (Multi-Sitio)
+    # Búsqueda semántica con umbral de relevancia
+    #    - k=5: recupera hasta 5 chunks (útil para PDFs con Q&A)
+    #    - score_threshold=0.3: descarta resultados poco relacionados
+    #      para evitar que el modelo reciba contexto que lo confunda
     try:
-        docs = vector_db.similarity_search(
-            query=pregunta,
-            k=3,  # Número de documentos a recuperar (configurable en settings)
-            filter={"site_id": site_id}
+        retriever = vector_db.as_retriever(
+            search_type="similarity_score_threshold",
+            search_kwargs={
+                "k": 5,
+                "score_threshold": 0.1,
+                "filter": {"site_id": site_id}
+            }
         )
+        docs = retriever.invoke(pregunta)
+
     except Exception as e:
         logger.error(f"Error en búsqueda vectorial para site_id='{site_id}': {e}", exc_info=True)
         raise ConnectionError("Error al buscar en la base de datos")
 
-    # Manejo de caso sin resultados
+    # Manejo del caso sin resultados relevantes
     if not docs:
-        logger.info(f"No se encontraron documentos para site_id='{site_id}' y pregunta='{pregunta[:50]}...'")
-        return "Lo siento, no tengo información sobre eso en mis documentos."
+        logger.info(
+            f"Sin documentos relevantes — site_id='{site_id}', "
+            f"pregunta='{pregunta[:60]}...'"
+        )
+        # Dejar que el modelo responda con el prompt de "no tengo información"
+        # pasándole un contexto vacío — así responde en el idioma del usuario
+        contexto_texto = "(No relevant documents found for this query.)"
+    else:
+        logger.debug(f"Documentos recuperados: {len(docs)} para site_id='{site_id}'")
+        contexto_texto = "\n\n---\n\n".join([doc.page_content for doc in docs])
 
-    # Log de documentos encontrados (para debugging)
-    logger.debug(f"Encontrados {len(docs)} documentos para site_id='{site_id}'")
-
-    # Construir el contexto a partir de los documentos encontrados
-    contexto_texto = "\n\n---\n\n".join([doc.page_content for doc in docs])
-
-    # Configurar el modelo de lenguaje (GPT)
+    # Inicializar el modelo de lenguaje
     try:
         llm = ChatOpenAI(
             model_name=settings.MODEL_NAME,
@@ -70,54 +153,54 @@ def generar_respuesta(pregunta: str, site_id: str) -> str:
         logger.error(f"Error inicializando OpenAI: {e}", exc_info=True)
         raise ConnectionError("Error al conectar con el servicio de IA")
 
-    # Crear el prompt con instrucciones claras
+    # Construir el prompt y ejecutar la cadena
     prompt_template = ChatPromptTemplate.from_messages([
-        ("system", "Eres un asistente útil de la empresa. Responde basándote SOLO en el siguiente contexto. Si no sabes la respuesta, di que no tienes esa información."),
-        ("user", "Contexto:\n{contexto}\n\nPregunta: {pregunta}")
+        ("system", SYSTEM_PROMPT),
+        ("user",
+         "Context from official business documents:\n"
+         "{contexto}\n\n"
+         "---\n"
+         "User question: {pregunta}")
     ])
-    
-    # Ejecutar la cadena (Prompt + LLM)
+
     try:
         chain = prompt_template | llm
-        respuesta_ai = chain.invoke({"contexto": contexto_texto, "pregunta": pregunta})
-        
+        respuesta_ai = chain.invoke({
+            "contexto": contexto_texto,
+            "pregunta": pregunta
+        })
+
         logger.info(f"Respuesta generada exitosamente para site_id='{site_id}'")
         return respuesta_ai.content
-        
+
     except Exception as e:
         logger.error(f"Error generando respuesta con OpenAI: {e}", exc_info=True)
         raise ConnectionError("Error al generar la respuesta")
 
 
-# Importar en routes.py para usar caché en respuestas frecuentes
+# CACHÉ DE RESPUESTAS FRECUENTES
+# Si se recarga un documento desde el dashboard, se llama a limpiar_cache()
+# para que el modelo use el contenido actualizado.
+
 @lru_cache(maxsize=100)
 def generar_respuesta_cached(pregunta: str, site_id: str) -> str:
     return generar_respuesta(pregunta, site_id)
 
 
-# Limpiar caché
-
 def limpiar_cache():
+    """Limpia el caché de respuestas. Llamar después de recargar documentos."""
     generar_respuesta_cached.cache_clear()
     logger.info("Caché de respuestas limpiado")
 
 
 def obtener_estadisticas_cache() -> dict:
-    """
-    Obtiene estadísticas del caché.
-    
-    Returns:
-        dict: Información sobre el uso del caché
-            - hits: Veces que se usó el caché
-            - misses: Veces que se generó respuesta nueva
-            - maxsize: Tamaño máximo del caché
-            - currsize: Tamaño actual del caché
-    """
+    """Retorna métricas de uso del caché."""
     info = generar_respuesta_cached.cache_info()
+    total = info.hits + info.misses
     return {
-        "hits": info.hits,
-        "misses": info.misses,
-        "maxsize": info.maxsize,
+        "hits":     info.hits,
+        "misses":   info.misses,
+        "maxsize":  info.maxsize,
         "currsize": info.currsize,
-        "hit_rate": f"{(info.hits / (info.hits + info.misses) * 100):.2f}%" if (info.hits + info.misses) > 0 else "0%"
+        "hit_rate": f"{(info.hits / total * 100):.2f}%" if total > 0 else "0%"
     }
