@@ -65,7 +65,8 @@ def dashboard_page():
     with col2:
         st.metric(
             label="Total de Chunks",
-            value=stats["total_chunks"]
+            value=stats["total_chunks"],
+            help="Un 'chunk' es un fragmento de texto en el que se dividen tus documentos PDF. Mientras más chunks, más detallada es la base de conocimiento para el modelo de IA."
         )
     
     with col3:
