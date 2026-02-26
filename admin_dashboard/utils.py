@@ -79,6 +79,17 @@ def process_pdf(file_path: str, site_id: str) -> int:
     Procesa un PDF y lo agrega a ChromaDB.
     Retorna el número de chunks procesados.
     """
+    filename = os.path.basename(file_path)
+    
+    # Eliminar chunks actuales de ChromaDB
+    collection = get_collection()
+    if collection:
+        results = collection.get(
+            where={"$and": [{"source_file": filename}, {"site_id": site_id}]}
+        )
+        if results and results.get("ids"):
+            collection.delete(ids=results["ids"])
+
     loader    = PyPDFLoader(file_path)
     documents = loader.load()
 
@@ -91,7 +102,7 @@ def process_pdf(file_path: str, site_id: str) -> int:
 
     for chunk in chunks:
         chunk.metadata["site_id"]     = site_id
-        chunk.metadata["source_file"] = os.path.basename(file_path)
+        chunk.metadata["source_file"] = filename
 
     embeddings  = OpenAIEmbeddings()
     vectorstore = Chroma(
@@ -137,6 +148,9 @@ def get_documents_by_site(site_id: str = None) -> List[Dict]:
         for metadata in results["metadatas"]:
             source      = metadata.get("source_file", "")
             doc_site_id = metadata.get("site_id", "")
+
+            if source == "__placeholder__":
+                continue
 
             if site_id and doc_site_id != site_id:
                 continue
@@ -199,10 +213,17 @@ def get_statistics() -> Dict:
         unique_docs  = set()
         docs_by_site = {}
 
+        # Ajuste para contabilizar solo chunks reales (no placeholders)
+        real_chunks_count = 0
+
         for metadata in results["metadatas"]:
             source  = metadata.get("source_file", "")
             site_id = metadata.get("site_id", "")
 
+            if source == "__placeholder__":
+                continue
+
+            real_chunks_count += 1
             unique_docs.add((source, site_id))
 
             if site_id not in docs_by_site:
@@ -211,7 +232,7 @@ def get_statistics() -> Dict:
 
         return {
             "total_documents":  len(unique_docs),
-            "total_chunks":     len(results["metadatas"]),
+            "total_chunks":     real_chunks_count,
             "documents_by_site": {k: len(v) for k, v in docs_by_site.items()}
         }
 
@@ -225,6 +246,9 @@ def reload_document(filename: str, site_id: str) -> tuple[bool, str]:
     Recarga un documento: lo elimina de ChromaDB y lo vuelve a procesar.
     Invalida el caché de respuestas de rag_service al finalizar.
     """
+    if filename == "__placeholder__":
+        return False, "No se puede recargar un placeholder"
+        
     try:
         file_path = Path(DOCS_DIR) / filename
 
@@ -251,3 +275,109 @@ def reload_document(filename: str, site_id: str) -> tuple[bool, str]:
 
     except Exception as e:
         return False, f"Error al recargar documento: {str(e)}"
+
+
+def get_all_site_ids() -> List[str]:
+    """
+    Retorna la lista de todos los site_ids únicos registrados en ChromaDB,
+    incluyendo aquellos creados vacíos (sin documentos).
+    """
+    collection = get_collection()
+    if not collection:
+        return []
+
+    try:
+        results = collection.get(include=["metadatas"])
+        if not results or not results.get("metadatas"):
+            return []
+
+        site_ids = set()
+        for metadata in results["metadatas"]:
+            site_id = metadata.get("site_id")
+            if site_id:
+                site_ids.add(site_id)
+        
+        return sorted(list(site_ids))
+    except Exception as e:
+        st.error(f"Error al obtener site_ids: {str(e)}")
+        return []
+
+
+def add_site_id(site_id: str) -> bool:
+    """
+    Registra un site_id nuevo en ChromaDB insertando un documento dummy.
+    Retorna True si se creó, False si ya existía.
+    """
+    existing_site_ids = get_all_site_ids()
+    if site_id in existing_site_ids:
+        return False
+        
+    try:
+        from langchain_core.documents import Document
+        
+        # Insertar placeholder
+        placeholder_id = f"placeholder_{site_id}"
+        chunks = [Document(page_content="", metadata={"site_id": site_id, "source_file": "__placeholder__"})]
+        
+        embeddings = OpenAIEmbeddings()
+        vectorstore = Chroma(
+            collection_name=COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=CHROMA_DIR
+        )
+        
+        vectorstore.add_documents(chunks, ids=[placeholder_id])
+        return True
+    except Exception as e:
+        st.error(f"Error al crear site_id: {str(e)}")
+        return False
+
+
+def delete_site_id(site_id: str) -> tuple[bool, str]:
+    """
+    Elimina todos los chunks asociados a ese site_id en ChromaDB (incluyendo el placeholder). 
+    También elimina los archivos físicos del directorio DOCS_DIR que empiecen con {site_id}_.
+    Retorna (True, mensaje) o (False, mensaje_error).
+    """
+    collection = get_collection()
+    if not collection:
+        return False, "No se pudo conectar a ChromaDB"
+
+    try:
+        # Eliminar de ChromaDB
+        results = collection.get(where={"site_id": site_id})
+        if results and results.get("ids"):
+            collection.delete(ids=results["ids"])
+
+        # Eliminar archivos físicos
+        docs_path = Path(DOCS_DIR)
+        if docs_path.exists():
+            for file_path in docs_path.glob(f"{site_id}_*"):
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                    except Exception as e:
+                        pass
+
+        return True, f"Sitio {site_id} y sus documentos fueron eliminados correctamente."
+    except Exception as e:
+        return False, f"Error al eliminar site_id: {str(e)}"
+
+
+def site_id_has_documents(site_id: str) -> bool:
+    """
+    Retorna True si el site_id tiene chunks reales (excluyendo el placeholder __placeholder__).
+    """
+    collection = get_collection()
+    if not collection:
+        return False
+
+    try:
+        results = collection.get(
+            where={"$and": [{"site_id": site_id}, {"source_file": {"$ne": "__placeholder__"}}]}
+        )
+        if results and results.get("ids") and len(results["ids"]) > 0:
+            return True
+        return False
+    except Exception:
+        return False

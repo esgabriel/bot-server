@@ -8,8 +8,18 @@ from pydantic_settings import BaseSettings
 
 # Usuarios y hashes de contraseñas (bcrypt)
 USERS = {
-    "quaxaradmin": "$2b$12$2Q4Zv.kQFyo3Z5oHkptkh.Ee/PCyQvhCywIsiuMEOgXh4MU56gIau",
-    "marketing": "$2b$12$dxi/UUv69lIv3nDit3hCT.uVwCotBJK42rMCd8J1F3B2vSJ7/vYpK"
+    "usernames": {
+        "quaxaradmin": {
+            "name": "Admin",
+            "email": "admin@quaxar.com",
+            "password": "$2b$12$2Q4Zv.kQFyo3Z5oHkptkh.Ee/PCyQvhCywIsiuMEOgXh4MU56gIau"
+        },
+        "marketing": {
+            "name": "Marketing",
+            "email": "marketing@quaxar.com",
+            "password": "$2b$12$dxi/UUv69lIv3nDit3hCT.uVwCotBJK42rMCd8J1F3B2vSJ7/vYpK"
+        }
+    }
 }
 
 # SITE IDS PREDEFINIDOS

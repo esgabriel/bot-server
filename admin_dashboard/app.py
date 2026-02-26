@@ -8,9 +8,11 @@ import os
 from pathlib import Path
 import base64
 
+import re
+
 # Importar módulos locales
-from auth import check_password, logout, get_current_user, init_session_state
-from config import APP_TITLE, APP_DESCRIPTION, SITE_IDS
+from auth import check_password, get_authenticator, get_current_user, init_session_state
+from config import APP_TITLE, APP_DESCRIPTION, DOCS_DIR
 from utils import (
     validate_pdf,
     save_uploaded_file,
@@ -18,7 +20,11 @@ from utils import (
     get_documents_by_site,
     delete_document,
     get_statistics,
-    reload_document
+    reload_document,
+    get_all_site_ids,
+    add_site_id,
+    delete_site_id,
+    site_id_has_documents
 )
 
 # Configuración de la página
@@ -32,6 +38,13 @@ st.set_page_config(
 # Inicializar estado de sesión
 init_session_state()
 
+st.markdown("""
+    <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+    </style>
+""", unsafe_allow_html=True)
 
 def show_pdf_preview(pdf_file):
     """
@@ -119,25 +132,13 @@ def upload_single_page():
         # Selector de Site ID
         st.subheader("Selecciona el Site ID")
         
-        col1, col2 = st.columns([3, 1])
+        site_id_option = st.selectbox(
+            "Site ID",
+            options=["Seleccionar..."] + get_all_site_ids(),
+            key="site_id_selector"
+        )
         
-        with col1:
-            site_id_option = st.selectbox(
-                "Site ID",
-                options=["Seleccionar..."] + SITE_IDS + ["Otro (escribir)"],
-                key="site_id_selector"
-            )
-        
-        # Si el usuario selecciona "Otro", mostrar input para escribir el Site ID
-        if site_id_option == "Otro (escribir)":
-            with col2:
-                custom_site_id = st.text_input(
-                    "Escribe el Site ID",
-                    key="custom_site_id",
-                    help="Solo letras, números, guiones y guiones bajos"
-                )
-                site_id = custom_site_id
-        elif site_id_option != "Seleccionar...":
+        if site_id_option != "Seleccionar...":
             site_id = site_id_option
         else:
             site_id = None
@@ -208,23 +209,13 @@ def upload_multiple_page():
     # Selector de Site ID
     st.subheader("Selecciona el Site ID")
     
-    col1, col2 = st.columns([3, 1])
+    site_id_option = st.selectbox(
+        "Site ID",
+        options=["Seleccionar..."] + get_all_site_ids(),
+        key="multi_site_id_selector"
+    )
     
-    with col1:
-        site_id_option = st.selectbox(
-            "Site ID",
-            options=["Seleccionar..."] + SITE_IDS + ["Otro (escribir)"],
-            key="multi_site_id_selector"
-        )
-    
-    if site_id_option == "Otro (escribir)":
-        with col2:
-            custom_site_id = st.text_input(
-                "Escribe el Site ID",
-                key="multi_custom_site_id"
-            )
-            site_id = custom_site_id
-    elif site_id_option != "Seleccionar...":
+    if site_id_option != "Seleccionar...":
         site_id = site_id_option
     else:
         site_id = None
@@ -322,7 +313,7 @@ def documents_list_page():
     with col2:
         filter_site = st.selectbox(
             "Filtrar por Site ID",
-            options=["Todos"] + SITE_IDS,
+            options=["Todos"] + get_all_site_ids(),
             key="filter_site_id"
         )
     
@@ -350,15 +341,38 @@ def documents_list_page():
     # Tabla de documentos
     for idx, doc in enumerate(documents):
         with st.container():
-            col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1, 1, 1, 1])
             
             with col1:
                 st.write(f"**{doc['filename']}**")
             
             with col2:
                 st.write(f"`{doc['site_id']}`")
+                
+            file_path = Path(DOCS_DIR) / doc['filename']
+            show_preview = False
             
             with col3:
+                if st.button("Visualizar", key=f"view_{idx}"):
+                    if file_path.exists():
+                        show_preview = True
+                    else:
+                        st.warning("Archivo no disponible para visualizar")
+            
+            with col4:
+                if file_path.exists():
+                    with open(file_path, "rb") as f:
+                        st.download_button(
+                            label="Descargar",
+                            data=f,
+                            file_name=doc['filename'],
+                            mime="application/pdf",
+                            key=f"download_{idx}"
+                        )
+                else:
+                    st.warning("Archivo no disponible para descarga")
+            
+            with col5:
                 if st.button("Recargar", key=f"reload_{idx}"):
                     with st.spinner("Recargando..."):
                         success, message = reload_document(doc['filename'], doc['site_id'])
@@ -368,14 +382,119 @@ def documents_list_page():
                         else:
                             st.error(message)
             
-            with col4:
+            with col6:
                 if st.button("Eliminar", key=f"delete_{idx}"):
                     if delete_document(doc['filename'], doc['site_id']):
                         st.success("Documento eliminado")
                         st.rerun()
                     else:
                         st.error("Error al eliminar")
+                        
+            if show_preview:
+                with st.expander("Preview del PDF", expanded=True):
+                    with open(file_path, "rb") as f:
+                        show_pdf_preview(f)
             
+            st.markdown("---")
+
+
+def gestionar_site_ids_page():
+    """
+    Página para gestionar los Site IDs.
+    """
+    st.title("Gestionar Site IDs")
+    st.markdown("---")
+    
+    # Sección 1: Agregar nuevo Site ID
+    st.subheader("Agregar nuevo Site ID")
+    
+    # Manejar estado en session_state para que 'Enter' lance el callback
+    def on_add_site_id():
+        sid = st.session_state.get("new_site_id_input", "").strip()
+        if not sid:
+            st.toast("Debes escribir un nombre.", icon="⚠️")
+        elif not re.match(r"^[a-zA-Z0-9_-]+$", sid):
+            st.toast("El nombre solo puede contener letras, números, guiones y guiones bajos.", icon="⚠️")
+        else:
+            success = add_site_id(sid)
+            if success:
+                st.toast(f"Site ID '{sid}' agregado exitosamente.", icon="✅")
+                st.session_state["new_site_id_input"] = "" # Limpiar input
+            else:
+                st.toast(f"El Site ID '{sid}' ya existe.", icon="⚠️")
+
+    col_input, col_btn = st.columns([3, 1])
+    
+    with col_input:
+        st.text_input(
+            "Nombre del nuevo Site ID", 
+            key="new_site_id_input", 
+            help="Solo letras, números, guiones y guiones bajos (presiona Enter para agregar)",
+            on_change=on_add_site_id
+        )
+        
+    with col_btn:
+        st.write("") # Espaciado
+        st.write("")
+        st.button("Agregar", use_container_width=True, on_click=on_add_site_id)
+        
+    st.markdown("---")
+    
+    # Sección 2: Site IDs activos
+    st.subheader("Site IDs activos")
+    
+    site_ids = get_all_site_ids()
+    if not site_ids:
+        st.info("No hay Site IDs registrados.")
+        return
+        
+    for site_id in site_ids:
+        with st.container():
+            col1, col2, col3 = st.columns([2, 2, 1])
+            
+            with col1:
+                st.write(f"**{site_id}**")
+            
+            docs = get_documents_by_site(site_id)
+            doc_count = len([d for d in docs if d["filename"] != "__placeholder__"])
+            has_docs = site_id_has_documents(site_id)
+            
+            with col2:
+                st.write(f"{doc_count} documento(s)")
+            
+            with col3:
+                # Si no tiene documentos, eliminamos directo sin confirmación
+                if not has_docs:
+                    if st.button("Eliminar", key=f"del_{site_id}"):
+                        success, msg = delete_site_id(site_id)
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    # Mostrar botón que triggeréa la confirmación
+                    if st.button("Eliminar", key=f"del_request_{site_id}"):
+                        st.session_state[f"confirm_del_{site_id}"] = True
+            
+            # Mostrar UI de confirmación si fue solicitada
+            if has_docs and st.session_state.get(f"confirm_del_{site_id}", False):
+                st.warning(f"Este site ID tiene {doc_count} documentos. Se eliminarán todos. ¿Confirmas?")
+                c1, c2, c3 = st.columns([1, 1, 2])
+                with c1:
+                    if st.button("Confirmar", key=f"confirm_{site_id}"):
+                        success, msg = delete_site_id(site_id)
+                        st.session_state[f"confirm_del_{site_id}"] = False
+                        if success:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                with c2:
+                    if st.button("Cancelar", key=f"cancel_{site_id}"):
+                        st.session_state[f"confirm_del_{site_id}"] = False
+                        st.rerun()
+                        
             st.markdown("---")
 
 
@@ -400,7 +519,8 @@ def main():
                 "Dashboard",
                 "Subir Documento",
                 "Subir Múltiples",
-                "Lista de Documentos"
+                "Lista de Documentos",
+                "Gestionar Site IDs"
             ],
             key="navigation"
         )
@@ -408,8 +528,8 @@ def main():
         st.markdown("---")
         
         # Botón de cerrar sesión
-        if st.button("Cerrar Sesión", use_container_width=True):
-            logout()
+        authenticator = get_authenticator()
+        authenticator.logout("Cerrar Sesión", "sidebar")
     
     # Mostrar página seleccionada
     if page == "Dashboard":
@@ -420,6 +540,8 @@ def main():
         upload_multiple_page()
     elif page == "Lista de Documentos":
         documents_list_page()
+    elif page == "Gestionar Site IDs":
+        gestionar_site_ids_page()
 
 
 if __name__ == "__main__":

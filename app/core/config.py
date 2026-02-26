@@ -4,7 +4,7 @@ import json
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Chatbot RAG Multi-Sitio"
-    VERSION: str = "2.0.0"
+    VERSION: str = "1.0.0"
 
     # OpenAI
     OPENAI_API_KEY: str
@@ -23,7 +23,6 @@ class Settings(BaseSettings):
 
     # Seguridad — definir los orígenes permitidos en el .env como JSON:
     # CORS_ORIGINS=["https://tu-sitio.com","https://otro-sitio.com"]
-    # Para desarrollo local se puede usar: CORS_ORIGINS=["http://localhost:3000"]
     CORS_ORIGINS: list[str] = []
 
     # Clave secreta para autenticar el plugin de WordPress.
