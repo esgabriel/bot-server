@@ -1,0 +1,11 @@
+[server]
+# Desactivar protección XSRF — el proxy inverso ya maneja la seguridad HTTPS
+enableXsrfProtection = false
+# Desactivar CORS interno de Streamlit — el proxy lo gestiona
+enableCORS = false
+
+[browser]
+# Dominio público del dashboard
+serverAddress = "chatbot.quaxar.com"
+# Puerto HTTPS estándar
+serverPort = 443

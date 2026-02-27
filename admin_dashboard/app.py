@@ -20,11 +20,13 @@ from utils import (
     get_documents_by_site,
     delete_document,
     get_statistics,
-    reload_document,
     get_all_site_ids,
     add_site_id,
     delete_site_id,
-    site_id_has_documents
+    site_id_has_documents,
+    get_cors_origins,
+    add_cors_origin,
+    delete_cors_origin
 )
 
 # Configuración de la página
@@ -40,9 +42,9 @@ init_session_state()
 
 st.markdown("""
     <style>
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
-        footer {visibility: hidden;}
+        #MainMenu {display: none;}
+        .stDeployButton {display: none;}
+        footer {display: none;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -341,7 +343,7 @@ def documents_list_page():
     # Tabla de documentos
     for idx, doc in enumerate(documents):
         with st.container():
-            col1, col2, col3, col4, col5, col6 = st.columns([3, 2, 1, 1, 1, 1])
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 1, 1])
             
             with col1:
                 st.write(f"**{doc['filename']}**")
@@ -373,16 +375,6 @@ def documents_list_page():
                     st.warning("Archivo no disponible para descarga")
             
             with col5:
-                if st.button("Recargar", key=f"reload_{idx}"):
-                    with st.spinner("Recargando..."):
-                        success, message = reload_document(doc['filename'], doc['site_id'])
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
-            
-            with col6:
                 if st.button("Eliminar", key=f"delete_{idx}"):
                     if delete_document(doc['filename'], doc['site_id']):
                         st.success("Documento eliminado")
@@ -498,6 +490,76 @@ def gestionar_site_ids_page():
             st.markdown("---")
 
 
+def gestionar_cors_page():
+    """
+    Página para gestionar los dominios permitidos en CORS.
+    """
+    st.title("Dominios Permitidos")
+    st.markdown("---")
+
+    st.info(
+        "Agrega aquí los dominios de los sitios WordPress que consumirán la API del chatbot. "
+        "Los cambios se aplican de inmediato sin necesidad de reiniciar el servidor."
+    )
+
+    # Sección: Agregar nuevo dominio
+    st.subheader("Agregar dominio")
+
+    def on_add_origin():
+        origin = st.session_state.get("new_cors_origin_input", "").strip()
+        if not origin:
+            st.toast("Debes escribir un dominio.", icon="⚠️")
+            return
+        success, msg = add_cors_origin(origin)
+        if success:
+            st.toast(msg, icon="✅")
+            st.session_state["new_cors_origin_input"] = ""
+        else:
+            st.toast(msg, icon="⚠️")
+
+    col_input, col_btn = st.columns([3, 1])
+
+    with col_input:
+        st.text_input(
+            "Dominio",
+            key="new_cors_origin_input",
+            placeholder="https://mi-sitio-wordpress.com",
+            help="Incluye el protocolo (https:// o http://) y sin barra al final.",
+            on_change=on_add_origin
+        )
+
+    with col_btn:
+        st.write("")
+        st.write("")
+        st.button("Agregar", use_container_width=True, on_click=on_add_origin)
+
+    st.markdown("---")
+
+    # Sección: Dominios activos
+    st.subheader("Dominios permitidos")
+
+    origins = get_cors_origins()
+
+    if not origins:
+        st.warning("No hay dominios configurados. El chatbot no funcionará en ningún sitio hasta que agregues al menos uno.")
+        return
+
+    for origin in origins:
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            st.code(origin)
+
+        with col2:
+            if st.button("Eliminar", key=f"del_cors_{origin}"):
+                success, msg = delete_cors_origin(origin)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+
 def main():
     """
     Función principal de la aplicación
@@ -520,7 +582,8 @@ def main():
                 "Subir Documento",
                 "Subir Múltiples",
                 "Lista de Documentos",
-                "Gestionar Site IDs"
+                "Gestionar Site IDs",
+                "Dominios Permitidos"
             ],
             key="navigation"
         )
@@ -542,6 +605,8 @@ def main():
         documents_list_page()
     elif page == "Gestionar Site IDs":
         gestionar_site_ids_page()
+    elif page == "Dominios Permitidos":
+        gestionar_cors_page()
 
 
 if __name__ == "__main__":

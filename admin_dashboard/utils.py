@@ -17,6 +17,7 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 
 from config import (
+    BASE_DIR,
     DOCS_DIR,
     CHROMA_DIR,
     COLLECTION_NAME,
@@ -243,38 +244,99 @@ def get_statistics() -> Dict:
 
 def reload_document(filename: str, site_id: str) -> tuple[bool, str]:
     """
-    Recarga un documento: lo elimina de ChromaDB y lo vuelve a procesar.
-    Invalida el caché de respuestas de rag_service al finalizar.
+    Recarga un documento de forma segura:
+    1. Verifica que el archivo existe
+    2. Procesa el PDF nuevo primero
+    3. Solo si el procesamiento fue exitoso, elimina los chunks viejos
+    4. Si algo falla después de borrar, hace rollback con los chunks originales
     """
     if filename == "__placeholder__":
         return False, "No se puede recargar un placeholder"
-        
+
+    file_path = Path(DOCS_DIR) / filename
+
+    # PASO 1 — Verificar que el archivo existe antes de hacer cualquier cosa
+    if not file_path.exists():
+        return False, "El archivo no existe en el sistema de archivos"
+
+    collection = get_collection()
+    if not collection:
+        return False, "No se pudo conectar a ChromaDB"
+
+    # PASO 2 — Obtener los chunks actuales para poder hacer rollback si algo falla
+    backup_chunks = []
     try:
-        file_path = Path(DOCS_DIR) / filename
+        results = collection.get(
+            where={"$and": [{"source_file": filename}, {"site_id": site_id}]},
+            include=["documents", "metadatas", "embeddings"]
+        )
+        if results and results.get("ids"):
+            backup_chunks = {
+                "ids":        results["ids"],
+                "documents":  results["documents"],
+                "metadatas":  results["metadatas"],
+                "embeddings": results["embeddings"]
+            }
+    except Exception as e:
+        return False, f"Error al hacer backup de chunks existentes: {str(e)}"
 
-        if not file_path.exists():
-            return False, "El archivo no existe en el sistema de archivos"
+    # PASO 3 — Procesar el PDF nuevo antes de borrar nada
+    try:
+        loader    = PyPDFLoader(str(file_path))
+        documents = loader.load()
 
-        # Eliminar chunks actuales de ChromaDB
-        collection = get_collection()
-        if collection:
-            results = collection.get(
-                where={"$and": [{"source_file": filename}, {"site_id": site_id}]}
-            )
-            if results and results.get("ids"):
-                collection.delete(ids=results["ids"])
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            length_function=len
+        )
+        new_chunks = text_splitter.split_documents(documents)
 
-        # Reprocesar el documento
-        chunks = process_pdf(str(file_path), site_id)
+        for chunk in new_chunks:
+            chunk.metadata["site_id"]     = site_id
+            chunk.metadata["source_file"] = filename
 
-        # Invalidar el caché de respuestas para que el API use el contenido nuevo.
-        # Sin esto, las preguntas cacheadas seguirían devolviendo respuestas viejas
-        _try_limpiar_cache()
-
-        return True, f"Documento recargado exitosamente ({chunks} chunks procesados)"
+        if not new_chunks:
+            return False, "El PDF no generó ningún chunk. Verifica que el archivo no está vacío o corrupto."
 
     except Exception as e:
-        return False, f"Error al recargar documento: {str(e)}"
+        return False, f"Error al procesar el PDF: {str(e)}"
+
+    # PASO 4 — Solo ahora que el procesamiento fue exitoso, borrar los chunks viejos
+    try:
+        if backup_chunks and backup_chunks.get("ids"):
+            collection.delete(ids=backup_chunks["ids"])
+    except Exception as e:
+        return False, f"Error al eliminar chunks anteriores: {str(e)}"
+
+    # PASO 5 — Guardar los chunks nuevos
+    try:
+        embeddings  = OpenAIEmbeddings()
+        vectorstore = Chroma(
+            collection_name=COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=CHROMA_DIR
+        )
+        vectorstore.add_documents(new_chunks)
+
+    except Exception as e:
+        # ROLLBACK — si falla al guardar los nuevos, restaurar los originales
+        if backup_chunks and backup_chunks.get("ids"):
+            try:
+                collection.add(
+                    ids=backup_chunks["ids"],
+                    documents=backup_chunks["documents"],
+                    metadatas=backup_chunks["metadatas"],
+                    embeddings=backup_chunks["embeddings"]
+                )
+            except Exception as rollback_error:
+                return False, f"Error crítico: falló al guardar nuevos chunks Y al hacer rollback: {str(rollback_error)}"
+        return False, f"Error al guardar nuevos chunks. Se restauraron los originales: {str(e)}"
+
+    # PASO 6 — Invalidar caché
+    _try_limpiar_cache()
+
+    return True, f"Documento recargado exitosamente ({len(new_chunks)} chunks procesados)"
 
 
 def get_all_site_ids() -> List[str]:
@@ -381,3 +443,64 @@ def site_id_has_documents(site_id: str) -> bool:
         return False
     except Exception:
         return False
+
+
+# — CORS Management —
+import json
+
+CORS_FILE_PATH = os.path.join(BASE_DIR, "data", "cors_origins.json")
+
+def get_cors_origins() -> list:
+    """Retorna la lista de dominios permitidos en CORS."""
+    try:
+        if os.path.exists(CORS_FILE_PATH):
+            with open(CORS_FILE_PATH, "r") as f:
+                origins = json.load(f)
+                return origins if isinstance(origins, list) else []
+    except Exception:
+        pass
+    return []
+
+def add_cors_origin(origin: str) -> tuple[bool, str]:
+    """
+    Agrega un dominio a la lista de CORS.
+    Retorna (True, mensaje) o (False, mensaje_error).
+    """
+    origin = origin.strip().rstrip("/")
+
+    if not origin.startswith(("http://", "https://")):
+        return False, "El dominio debe comenzar con http:// o https://"
+
+    origins = get_cors_origins()
+
+    if origin in origins:
+        return False, f"El dominio '{origin}' ya está en la lista."
+
+    origins.append(origin)
+
+    try:
+        os.makedirs(os.path.dirname(CORS_FILE_PATH), exist_ok=True)
+        with open(CORS_FILE_PATH, "w") as f:
+            json.dump(origins, f, indent=2)
+        return True, f"Dominio '{origin}' agregado correctamente."
+    except Exception as e:
+        return False, f"Error al guardar: {str(e)}"
+
+def delete_cors_origin(origin: str) -> tuple[bool, str]:
+    """
+    Elimina un dominio de la lista de CORS.
+    Retorna (True, mensaje) o (False, mensaje_error).
+    """
+    origins = get_cors_origins()
+
+    if origin not in origins:
+        return False, f"El dominio '{origin}' no existe en la lista."
+
+    origins.remove(origin)
+
+    try:
+        with open(CORS_FILE_PATH, "w") as f:
+            json.dump(origins, f, indent=2)
+        return True, f"Dominio '{origin}' eliminado correctamente."
+    except Exception as e:
+        return False, f"Error al guardar: {str(e)}"
